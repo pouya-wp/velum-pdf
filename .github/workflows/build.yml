@@ -1,12 +1,17 @@
-name: Build Velum
+name: Velum · Build
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: velum-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -18,37 +23,57 @@ jobs:
         include:
           - name: Windows x64
             os: windows-latest
+            artifact: velum-windows-x64
           - name: macOS Apple Silicon
             os: macos-latest
-            args: --target aarch64-apple-darwin
+            artifact: velum-macos-arm64
           - name: macOS Intel
-            os: macos-13
-            args: --target x86_64-apple-darwin
+            os: macos-15-intel
+            artifact: velum-macos-x64
           - name: Linux x64
             os: ubuntu-22.04
+            artifact: velum-linux-x64
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
 
-      - name: Install frontend dependencies
-        run: npm install
+      - name: Install JavaScript dependencies
+        run: npm install --no-audit --no-fund
 
-      - name: Build Tauri
-        uses: tauri-apps/tauri-action@v0.6.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build Velum
+        run: npm run tauri:build
+
+      - name: Upload native bundles
+        uses: actions/upload-artifact@v7
         with:
-          args: ${{ matrix.args }}
-          uploadWorkflowArtifacts: true
-          workflowArtifactNamePattern: 'velum-${{ runner.os }}-${{ runner.arch }}'
+          name: ${{ matrix.artifact }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: error
+          retention-days: 14

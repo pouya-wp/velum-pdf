@@ -1,41 +1,66 @@
 # Velum
 
-A calm, local-first PDF reader for Windows, macOS and Linux.
+A premium, local-first PDF reader for Windows, macOS and Linux.
 
-## Highlights
+Velum is built to feel like a native product instead of an old document utility: quiet chrome, keyboard-first navigation, fast PDF.js rendering, thumbnails, search, bookmarks and a local-only workflow.
 
-- Modern, minimal desktop UI
-- Local PDF rendering with PDF.js
-- Drag & drop
-- Page thumbnails
-- Page navigation and zoom
-- Text search across the document
-- Bookmarks stored for the current session
-- Dark / light appearance
-- Command palette
-- Fullscreen mode
-- Recent document history (metadata only)
-- No account and no upload
-- Tauri 2 native desktop shell
+## Product surface
 
-## Build
+- PDF rendering with PDF.js
+- Fit page, fit width and 100% modes
+- Zoom controls
+- Page navigation and keyboard navigation
+- Thumbnail rail
+- Full-document text search with page previews
+- Bookmarks with persistent UI state
+- Command palette (`Ctrl/Cmd + K`)
+- Open (`Ctrl/Cmd + O`), search (`Ctrl/Cmd + F`), bookmark (`Ctrl/Cmd + B`)
+- Drag and drop
+- Recent-document metadata
+- Dark/light appearance
+- Fullscreen
+- Save a copy of the currently opened PDF
+- Responsive/mobile shell
+- No account, no cloud upload
+
+## Stack
+
+- React + TypeScript
+- Vite
+- PDF.js
+- Tauri 2
+- Rust
+- Lucide
+
+## Development
 
 ```bash
 npm install
+npm run tauri:dev
+```
+
+Typecheck:
+
+```bash
+npm run typecheck
+```
+
+Production bundle:
+
+```bash
 npm run tauri:build
 ```
 
-## GitHub Actions
+## Cross-platform builds
 
-- Pushes to `main` build Windows, macOS Intel, macOS Apple Silicon and Linux artifacts.
-- Tags like `v1.0.0` create a GitHub Release automatically.
+Pushes to `main` build Windows x64, macOS Apple Silicon, macOS Intel and Linux x64 and upload the installers as GitHub Actions artifacts.
 
-```bash
-git add .
-git commit -m "Release Velum 1.0"
-git push
-git tag v1.0.0
-git push origin v1.0.0
-```
+A semantic version tag such as `v2.0.0` runs the release pipeline. The pipeline builds every target, collects the native bundles and publishes one GitHub Release containing the installers.
 
-For production distribution, add Windows Authenticode signing and Apple Developer signing/notarization credentials to the release workflow.
+The CI intentionally uses explicit runner dependencies and GitHub's artifact service rather than custom inputs on `tauri-action`. This keeps the build pipeline easy to diagnose and independent from optional action features.
+
+## Distribution notes
+
+Unsigned Windows builds can trigger SmartScreen warnings. Unsigned macOS builds can trigger Gatekeeper warnings. Production distribution should add Windows Authenticode signing and Apple signing/notarization credentials.
+
+For Linux, the build uses Ubuntu 22.04 as the baseline for the AppImage so the resulting binary is compatible with an older glibc baseline. Tauri's documentation recommends building on an older supported Linux base rather than a very new base for this reason.

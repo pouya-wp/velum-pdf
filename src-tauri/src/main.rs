@@ -1,1 +1,3 @@
-fn main() { velum_lib::run(); }
+fn main() {
+    velum_lib::run();
+}

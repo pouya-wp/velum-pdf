@@ -1,242 +1,227 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from 'pdfjs-dist'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Bookmark, ChevronLeft, ChevronRight, Command, Download, FileText, FolderOpen,
-  Fullscreen, Grid2X2, Maximize2, Menu, Moon, PanelLeft, Plus, Search, Sparkles,
-  Sun, X, ZoomIn, ZoomOut
+  ArrowDownToLine, ArrowLeft, ArrowRight, Bookmark, BookmarkCheck, Check, ChevronDown,
+  ChevronLeft, ChevronRight, Command, FileText, FolderOpen, Grid2X2, Keyboard, Maximize2,
+  Menu, Moon, PanelLeft, Plus, Search, Settings2, Sparkles, Sun, X, ZoomIn, ZoomOut
 } from 'lucide-react'
+import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type PDFPageProxy } from 'pdfjs-dist'
+import type { TextItem } from 'pdfjs-dist/types/src/display/api'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url'
-import './styles.css'
 
 GlobalWorkerOptions.workerSrc = pdfWorker
 
-const RECENTS_KEY = 'velum:recents:v2'
-const THEME_KEY = 'velum:theme'
-
 type Recent = { name: string; size: number; lastOpened: number }
+type SearchHit = { page: number; preview: string }
+type FitMode = 'fit' | 'width' | 'actual'
+type Theme = 'dark' | 'light'
 
-type ThumbProps = { pdf: PDFDocumentProxy; page: number; active: boolean; onClick: () => void }
+const RECENTS_KEY = 'velum:recents:v3'
+const BOOKMARKS_KEY = 'velum:bookmarks:v2'
+const THEME_KEY = 'velum:theme:v2'
+const FIT_KEY = 'velum:fit:v1'
+const SIDEBAR_KEY = 'velum:sidebar:v1'
+const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const formatSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+const readStorage = <T,>(key: string, fallback: T): T => { try { const raw = localStorage.getItem(key); return raw ? (JSON.parse(raw) as T) : fallback } catch { return fallback } }
 
-function PageThumb({ pdf, page, active, onClick }: ThumbProps) {
+function Thumbnail({ pdf, page, active, bookmarked, onSelect }: { pdf: PDFDocumentProxy; page: number; active: boolean; bookmarked: boolean; onSelect: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
-    let dead = false
-    pdf.getPage(page).then(async p => {
-      if (dead || !canvasRef.current) return
-      const viewport = p.getViewport({ scale: 0.16 })
+    let cancelled = false
+    let task: { cancel?: () => void } | undefined
+    void pdf.getPage(page).then((p) => {
+      if (cancelled || !canvasRef.current) return
+      const viewport = p.getViewport({ scale: 0.17 })
+      const ratio = Math.min(window.devicePixelRatio || 1, 2)
       const canvas = canvasRef.current
-      const ratio = window.devicePixelRatio || 1
-      canvas.width = viewport.width * ratio
-      canvas.height = viewport.height * ratio
+      canvas.width = Math.ceil(viewport.width * ratio)
+      canvas.height = Math.ceil(viewport.height * ratio)
       canvas.style.width = `${viewport.width}px`
       canvas.style.height = `${viewport.height}px`
-      const ctx = canvas.getContext('2d')!
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-      await p.render({ canvasContext: ctx, viewport }).promise
-    })
-    return () => { dead = true }
+      task = p.render({ canvasContext: ctx, viewport })
+    }).catch(() => undefined)
+    return () => { cancelled = true; task?.cancel?.() }
   }, [pdf, page])
-  return <button className={`thumb ${active ? 'active' : ''}`} onClick={onClick} aria-label={`Go to page ${page}`}>
-    <div className="thumb-paper"><canvas ref={canvasRef} /></div><span>{page}</span>
+
+  return <button className={`thumbnail ${active ? 'is-active' : ''}`} onClick={onSelect} aria-label={`Open page ${page}`}>
+    <div className="thumbnail-card"><canvas ref={canvasRef} />{bookmarked && <BookmarkCheck size={12} className="thumbnail-bookmark" />}</div><span>{page}</span>
   </button>
 }
 
 export default function App() {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null)
-  const [fileName, setFileName] = useState('Welcome to Velum')
+  const [fileBytes, setFileBytes] = useState<Uint8Array | null>(null)
+  const [fileName, setFileName] = useState('Velum')
   const [fileSize, setFileSize] = useState(0)
   const [page, setPage] = useState(1)
-  const [scale, setScale] = useState(1)
-  const [sidebar, setSidebar] = useState(true)
-  const [dark, setDark] = useState(() => localStorage.getItem(THEME_KEY) !== 'light')
-  const [query, setQuery] = useState('')
+  const [zoom, setZoom] = useState(1)
+  const [fitMode, setFitMode] = useState<FitMode>(() => readStorage(FIT_KEY, 'fit'))
+  const [theme, setTheme] = useState<Theme>(() => readStorage(THEME_KEY, 'dark'))
+  const [sidebarOpen, setSidebarOpen] = useState(() => readStorage(SIDEBAR_KEY, true))
+  const [bookmarks, setBookmarks] = useState<number[]>(() => readStorage(BOOKMARKS_KEY, []))
+  const [recents, setRecents] = useState<Recent[]>(() => readStorage(RECENTS_KEY, []))
   const [searchOpen, setSearchOpen] = useState(false)
   const [commandOpen, setCommandOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
+  const [searchHits, setSearchHits] = useState<SearchHit[]>([])
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [recents, setRecents] = useState<Recent[]>(() => {
-    try { return JSON.parse(localStorage.getItem(RECENTS_KEY) || '[]') } catch { return [] }
-  })
-  const [bookmarks, setBookmarks] = useState<number[]>([])
-  const [searchResults, setSearchResults] = useState<number[]>([])
-  const [searching, setSearching] = useState(false)
+  const [toast, setToast] = useState('')
+  const [showStatus, setShowStatus] = useState(true)
+  const [renderVersion, setRenderVersion] = useState(0)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const readerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
-  const searchInput = useRef<HTMLInputElement>(null)
-  const mainRef = useRef<HTMLElement>(null)
-
+  const renderTaskRef = useRef<{ cancel?: () => void } | null>(null)
+  const searchTokenRef = useRef(0)
   const pages = pdf?.numPages ?? 0
-  const zoomLabel = `${Math.round(scale * 100)}%`
   const isBookmarked = bookmarks.includes(page)
+  const zoomLabel = fitMode === 'fit' ? 'Fit' : fitMode === 'width' ? 'Width' : `${Math.round(zoom * 100)}%`
+  const activeBookmarks = useMemo(() => bookmarks.filter((n) => n <= pages), [bookmarks, pages])
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-    localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light')
-  }, [dark])
-
-  const renderPage = useCallback(async () => {
-    if (!pdf || !canvasRef.current) return
-    const p = await pdf.getPage(page)
-    const base = p.getViewport({ scale: 1 })
-    const available = Math.max(480, mainRef.current?.clientWidth ?? 900)
-    const fit = Math.min((available - 120) / base.width, 1.22)
-    const viewport = p.getViewport({ scale: fit * scale })
-    const canvas = canvasRef.current
-    const ratio = Math.min(window.devicePixelRatio || 1, 2)
-    canvas.width = Math.ceil(viewport.width * ratio)
-    canvas.height = Math.ceil(viewport.height * ratio)
-    canvas.style.width = `${viewport.width}px`
-    canvas.style.height = `${viewport.height}px`
-    const ctx = canvas.getContext('2d')!
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-    await p.render({ canvasContext: ctx, viewport }).promise
-  }, [pdf, page, scale])
-
-  useEffect(() => { void renderPage() }, [renderPage])
-  useEffect(() => {
-    const onResize = () => void renderPage()
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [renderPage])
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem(THEME_KEY, JSON.stringify(theme)) }, [theme])
+  useEffect(() => { localStorage.setItem(FIT_KEY, JSON.stringify(fitMode)) }, [fitMode])
+  useEffect(() => { localStorage.setItem(SIDEBAR_KEY, JSON.stringify(sidebarOpen)) }, [sidebarOpen])
+  useEffect(() => { localStorage.setItem(RECENTS_KEY, JSON.stringify(recents)) }, [recents])
+  useEffect(() => { localStorage.setItem(BOOKMARKS_KEY, JSON.stringify(bookmarks)) }, [bookmarks])
+  const notify = useCallback((message: string) => { setToast(message); window.setTimeout(() => setToast(''), 2600) }, [])
 
   const openFile = useCallback(async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Please choose a PDF file.')
-      return
-    }
-    setLoading(true); setError('')
+    if (!file.name.toLowerCase().endsWith('.pdf')) { setError('Velum only opens PDF files.'); return }
+    setError(''); setLoading(true)
     try {
-      const data = new Uint8Array(await file.arrayBuffer())
-      const doc = await getDocument({ data }).promise
-      ;(window as Window & { __velumPdf?: Uint8Array }).__velumPdf = data
-      setPdf(old => { old?.destroy(); return doc })
-      setFileName(file.name)
-      setFileSize(file.size)
-      setPage(1); setScale(1); setBookmarks([]); setQuery(''); setSearchResults([])
-      const next = [{ name: file.name, size: file.size, lastOpened: Date.now() }, ...recents.filter(x => x.name !== file.name)].slice(0, 12)
-      setRecents(next); localStorage.setItem(RECENTS_KEY, JSON.stringify(next))
-    } catch (e) {
-      console.error(e); setError('Velum could not open this PDF. The file may be damaged or encrypted.')
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      const document = await getDocument({ data: bytes }).promise
+      setPdf((old) => { void old?.destroy(); return document })
+      setFileBytes(bytes); setFileName(file.name); setFileSize(file.size); setPage(1); setZoom(1); setFitMode('fit')
+      setQuery(''); setSearchHits([]); setBookmarks([])
+      setRecents((current) => [{ name: file.name, size: file.size, lastOpened: Date.now() }, ...current.filter((x) => x.name !== file.name)].slice(0, 16))
+      notify(`Opened ${file.name}`)
+    } catch (cause) {
+      console.error(cause); setError('Velum could not read this PDF. It may be damaged, encrypted, or unsupported.'); notify('Could not open that PDF')
     } finally { setLoading(false) }
-  }, [recents])
+  }, [notify])
 
-  const pickFile = () => fileInput.current?.click()
+  const pickFile = useCallback(() => fileInputRef.current?.click(), [])
+  const navigate = useCallback((next: number) => { if (pages) setPage(clamp(next, 1, pages)) }, [pages])
 
-  const downloadCurrent = () => {
-    const data = (window as Window & { __velumPdf?: Uint8Array }).__velumPdf
-    if (!data) return
-    const blob = new Blob([data], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a'); a.href = url; a.download = fileName; a.click(); URL.revokeObjectURL(url)
-  }
+  const renderPage = useCallback(async () => {
+    if (!pdf || !canvasRef.current || !readerRef.current) return
+    renderTaskRef.current?.cancel?.()
+    const current = await pdf.getPage(page)
+    const base = current.getViewport({ scale: 1 })
+    const availableWidth = Math.max(420, readerRef.current.clientWidth - 96)
+    const availableHeight = Math.max(420, readerRef.current.clientHeight - 76)
+    let scale = zoom
+    if (fitMode === 'fit') scale = Math.min(availableWidth / base.width, availableHeight / base.height)
+    if (fitMode === 'width') scale = availableWidth / base.width
+    scale = clamp(scale, 0.35, 4)
+    const viewport = current.getViewport({ scale })
+    const canvas = canvasRef.current; const ratio = Math.min(window.devicePixelRatio || 1, 2)
+    canvas.width = Math.ceil(viewport.width * ratio); canvas.height = Math.ceil(viewport.height * ratio)
+    canvas.style.width = `${Math.round(viewport.width)}px`; canvas.style.height = `${Math.round(viewport.height)}px`
+    const ctx = canvas.getContext('2d'); if (!ctx) return
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+    const renderTask = current.render({ canvasContext: ctx, viewport })
+    renderTaskRef.current = renderTask
+    try { await renderTask.promise } catch (cause) { if ((cause as { name?: string }).name !== 'RenderingCancelledException') console.error(cause) }
+  }, [fitMode, page, pdf, renderVersion, zoom])
+  useEffect(() => { void renderPage() }, [renderPage])
+  useEffect(() => { const onResize = () => setRenderVersion((v) => v + 1); window.addEventListener('resize', onResize); return () => window.removeEventListener('resize', onResize) }, [])
 
-  const toggleBookmark = () => setBookmarks(v => v.includes(page) ? v.filter(x => x !== page) : [...v, page].sort((a,b) => a-b))
-
-  const runSearch = async (value: string) => {
+  const searchDocument = useCallback(async (value: string) => {
     setQuery(value)
-    if (!pdf || value.trim().length < 2) { setSearchResults([]); return }
-    setSearching(true)
-    const hits: number[] = []
-    const needle = value.toLowerCase()
+    if (!pdf || value.trim().length < 2) { setSearchHits([]); return }
+    const token = ++searchTokenRef.current; setSearching(true); const needle = value.trim().toLocaleLowerCase(); const results: SearchHit[] = []
     try {
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const text = await (await pdf.getPage(i)).getTextContent()
-        const joined = text.items.map((item: any) => item.str || '').join(' ').toLowerCase()
-        if (joined.includes(needle)) hits.push(i)
-        if (hits.length >= 40) break
+      for (let index = 1; index <= pdf.numPages; index += 1) {
+        if (token !== searchTokenRef.current) return
+        const pageProxy = await pdf.getPage(index)
+        const content = (await pageProxy.getTextContent()).items.filter((item): item is TextItem => 'str' in item).map((item) => item.str).join(' ')
+        const lower = content.toLocaleLowerCase(); const position = lower.indexOf(needle)
+        if (position !== -1) { const start = Math.max(0, position - 42); results.push({ page: index, preview: content.slice(start, start + 120).trim() }); if (results.length >= 50) break }
       }
-      setSearchResults(hits)
-      if (hits.length) setPage(hits[0])
-    } finally { setSearching(false) }
-  }
+      if (token === searchTokenRef.current) { setSearchHits(results); if (results.length) navigate(results[0].page) }
+    } finally { if (token === searchTokenRef.current) setSearching(false) }
+  }, [navigate, pdf])
+
+  const downloadCurrent = useCallback(() => {
+    if (!fileBytes) return
+    const blob = new Blob([fileBytes], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a')
+    anchor.href = url; anchor.download = fileName; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url); notify('Saved a copy of the PDF')
+  }, [fileBytes, fileName, notify])
+  const toggleBookmark = useCallback(() => { if (!pdf) return; setBookmarks((current) => current.includes(page) ? current.filter((value) => value !== page) : [...current, page].sort((a, b) => a - b)); notify(isBookmarked ? `Removed page ${page} bookmark` : `Bookmarked page ${page}`) }, [isBookmarked, notify, page, pdf])
+  const toggleFullscreen = useCallback(async () => { try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen() } catch { notify('Fullscreen is unavailable here') } }, [notify])
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey
-      if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); pickFile() }
-      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); setCommandOpen(true) }
-      if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); setSearchOpen(true); setTimeout(() => searchInput.current?.focus(), 20) }
-      if (e.key === 'ArrowLeft' && pdf) setPage(p => Math.max(1, p - 1))
-      if (e.key === 'ArrowRight' && pdf) setPage(p => Math.min(pages, p + 1))
-      if (e.key === 'Escape') { setCommandOpen(false); setSearchOpen(false) }
+    const onKeyDown = (event: KeyboardEvent) => {
+      const modifier = event.metaKey || event.ctrlKey; const key = event.key.toLowerCase(); const target = event.target as HTMLElement | null; const typing = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable
+      if (modifier && key === 'o') { event.preventDefault(); pickFile(); return }
+      if (modifier && key === 'k') { event.preventDefault(); setCommandOpen(true); return }
+      if (modifier && key === 'f') { event.preventDefault(); setSearchOpen(true); window.setTimeout(() => searchInputRef.current?.focus(), 30); return }
+      if (modifier && key === 'b') { event.preventDefault(); toggleBookmark(); return }
+      if (key === 'f11') { event.preventDefault(); void toggleFullscreen(); return }
+      if (event.key === 'Escape') { setCommandOpen(false); setSearchOpen(false); setSettingsOpen(false); return }
+      if (typing || !pdf) return
+      if (event.key === 'ArrowLeft' || event.key === 'PageUp') { event.preventDefault(); navigate(page - 1) }
+      if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') { event.preventDefault(); navigate(page + 1) }
+      if (event.key.toLowerCase() === 'b') toggleBookmark(); if (event.key === '0') { setFitMode('fit'); setZoom(1) }; if (event.key === '1') setFitMode('actual'); if (event.key === '2') setFitMode('width')
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [pdf, pages])
+    window.addEventListener('keydown', onKeyDown); return () => window.removeEventListener('keydown', onKeyDown)
+  }, [navigate, page, pdf, pickFile, toggleBookmark, toggleFullscreen])
 
   useEffect(() => {
-    const onDrop = (e: DragEvent) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer?.files?.[0]; if (f) void openFile(f) }
-    const onOver = (e: DragEvent) => { e.preventDefault(); setDragging(true) }
-    window.addEventListener('dragover', onOver); window.addEventListener('drop', onDrop)
-    return () => { window.removeEventListener('dragover', onOver); window.removeEventListener('drop', onDrop) }
+    const onDragOver = (event: DragEvent) => { event.preventDefault(); setDragging(true) }
+    const onDragLeave = (event: DragEvent) => { if (event.clientX <= 0 || event.clientY <= 0) setDragging(false) }
+    const onDrop = (event: DragEvent) => { event.preventDefault(); setDragging(false); const file = event.dataTransfer?.files?.[0]; if (file) void openFile(file) }
+    window.addEventListener('dragover', onDragOver); window.addEventListener('dragleave', onDragLeave); window.addEventListener('drop', onDrop)
+    return () => { window.removeEventListener('dragover', onDragOver); window.removeEventListener('dragleave', onDragLeave); window.removeEventListener('drop', onDrop) }
   }, [openFile])
+  useEffect(() => () => { void pdf?.destroy() }, [pdf])
 
-  const fullscreen = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.()
-  const welcome = !pdf
+  const welcome = !pdf; const subtitle = welcome ? 'A quieter place for your documents.' : `${formatSize(fileSize)} · ${pages} ${pages === 1 ? 'page' : 'pages'}`
 
-  return <div className="app">
-    <input ref={fileInput} type="file" accept="application/pdf,.pdf" hidden onChange={e => { const f = e.target.files?.[0]; if (f) void openFile(f); e.currentTarget.value = '' }} />
-    {dragging && <div className="drop-overlay"><div className="drop-box"><div className="drop-icon"><FileText size={28}/></div><strong>Drop your PDF here</strong><span>Velum keeps your document on this device.</span></div></div>}
-    {loading && <div className="loading"><div className="spinner"/><span>Opening {fileName === 'Welcome to Velum' ? 'PDF' : fileName}…</span></div>}
-
+  return <div className="shell">
+    <input ref={fileInputRef} hidden type="file" accept="application/pdf,.pdf" onChange={(event) => { const file = event.target.files?.[0]; if (file) void openFile(file); event.currentTarget.value = '' }} />
     <header className="topbar">
-      <div className="brand"><div className="brand-mark"><Sparkles size={15}/></div><span>Velum</span><small>PDF</small></div>
-      <button className="document-pill" onClick={welcome ? pickFile : undefined}><FileText size={14}/><span>{fileName}</span>{pdf && <span className="doc-pages">{pages} pages</span>}</button>
-      <div className="top-actions">
-        <button className="icon-btn" title="Search (Ctrl/Cmd + F)" onClick={() => { setSearchOpen(true); setTimeout(() => searchInput.current?.focus(), 20) }}><Search size={17}/></button>
-        <button className="icon-btn" title="Command palette" onClick={() => setCommandOpen(true)}><Command size={17}/></button>
-        <button className="icon-btn" title="Toggle theme" onClick={() => setDark(v => !v)}>{dark ? <Sun size={17}/> : <Moon size={17}/>}</button>
-      </div>
+      <div className="brand-lockup"><div className="brand-icon"><Sparkles size={16} /></div><div><strong>Velum</strong><span>PDF reader</span></div></div>
+      <div className="document-heading"><div className="document-title"><FileText size={15} /><span title={fileName}>{fileName}</span></div><span>{subtitle}</span></div>
+      <div className="topbar-actions"><button className="topbar-action" onClick={() => { setSearchOpen(true); window.setTimeout(() => searchInputRef.current?.focus(), 30) }} title="Search"><Search size={17} /><span>Search</span><kbd>⌘F</kbd></button><button className="topbar-action compact" onClick={() => setCommandOpen(true)} title="Command palette"><Command size={17} /></button><button className="topbar-action compact" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} title="Toggle appearance">{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button></div>
     </header>
-
-    <div className="workspace">
-      <aside className={`sidebar ${sidebar ? '' : 'closed'}`}>
-        <div className="sidebar-top">
-          <button className="open-btn" onClick={pickFile}><Plus size={16}/><span>Open PDF</span><kbd>⌘ O</kbd></button>
-          <button className="library-search" onClick={() => { setSearchOpen(true); setTimeout(() => searchInput.current?.focus(), 20) }}><Search size={15}/><span>Search in document</span><kbd>⌘ F</kbd></button>
-        </div>
-        <div className="sidebar-section">
-          <div className="section-label">DOCUMENT</div>
-          <button className="nav-item active"><Grid2X2 size={15}/><span>Pages</span><b>{pages || '—'}</b></button>
-          <button className="nav-item" onClick={() => bookmarks[0] && setPage(bookmarks[0])}><Bookmark size={15}/><span>Bookmarks</span><b>{bookmarks.length || '—'}</b></button>
-        </div>
-        {pdf ? <div className="thumbs">{Array.from({ length: pages }, (_, i) => <PageThumb key={i+1} pdf={pdf} page={i+1} active={page === i+1} onClick={() => setPage(i+1)} />)}</div> : <div className="sidebar-empty"><FileText size={23}/><span>No document open</span><small>Open a PDF to see its pages.</small></div>}
-        <div className="sidebar-section recent-list">
-          <div className="section-label">RECENT</div>
-          {recents.slice(0, 5).map(r => <div className="recent-row" key={`${r.name}-${r.lastOpened}`}><div className="recent-file"><FileText size={14}/></div><div><strong>{r.name}</strong><span>{Math.max(1, Math.round(r.size / 1024))} KB</span></div></div>)}
-          {!recents.length && <small className="muted">Your recently opened files appear here.</small>}
-        </div>
-        <div className="sidebar-footer"><div className="privacy"><Sparkles size={15}/><div><strong>Local-first</strong><span>No account · no upload</span></div></div></div>
+    <div className="content-shell">
+      <aside className={`sidebar ${sidebarOpen ? '' : 'collapsed'}`}>
+        <div className="sidebar-controls"><button className="primary-button" onClick={pickFile}><Plus size={15} /><span>Open PDF</span><kbd>⌘O</kbd></button><button className="secondary-button" onClick={() => { setSearchOpen(true); window.setTimeout(() => searchInputRef.current?.focus(), 30) }}><Search size={15} /><span>Search document</span></button></div>
+        <div className="sidebar-block"><div className="sidebar-label">DOCUMENT</div><button className="side-row is-selected"><Grid2X2 size={15} /><span>Pages</span><b>{pages || '—'}</b></button><button className="side-row" disabled={!activeBookmarks.length} onClick={() => navigate(activeBookmarks[0] ?? page)}><Bookmark size={15} /><span>Bookmarks</span><b>{activeBookmarks.length || '—'}</b></button></div>
+        <div className="thumbnail-rail">{pdf ? Array.from({ length: pages }, (_, index) => { const pageNumber = index + 1; return <Thumbnail key={pageNumber} pdf={pdf} page={pageNumber} active={pageNumber === page} bookmarked={bookmarks.includes(pageNumber)} onSelect={() => navigate(pageNumber)} /> }) : <div className="empty-sidebar"><div className="empty-icon"><FileText size={18} /></div><strong>Nothing open</strong><span>Drop a PDF here or choose one above.</span></div>}</div>
+        <div className="recent-area"><div className="sidebar-label">RECENT</div>{recents.slice(0, 5).map((recent) => <div className="recent-item" key={`${recent.name}-${recent.lastOpened}`}><div className="recent-symbol"><FileText size={13} /></div><div><strong>{recent.name}</strong><span>{formatSize(recent.size)}</span></div></div>)}{!recents.length && <p className="quiet-note">Your last opened documents will appear here.</p>}</div>
+        <div className="sidebar-footer"><div className="privacy-card"><div className="privacy-dot"><Check size={13} /></div><div><strong>Private by default</strong><span>Files stay on this device.</span></div></div></div>
       </aside>
-
-      <main className="reader" ref={mainRef}>
-        <div className="reader-toolbar">
-          <div className="toolbar-side"><button className="tool-btn" onClick={() => setSidebar(v => !v)} title="Toggle sidebar"><PanelLeft size={17}/></button><span className="breadcrumb">Library <ChevronRight size={12}/><b>{fileName}</b></span></div>
-          {pdf && <div className="page-control"><button className="tool-btn" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p-1))}><ChevronLeft size={17}/></button><span><b>{page}</b> <i>/</i> {pages}</span><button className="tool-btn" disabled={page >= pages} onClick={() => setPage(p => Math.min(pages, p+1))}><ChevronRight size={17}/></button></div>}
-          <div className="toolbar-side right"><button className={`tool-btn ${isBookmarked ? 'selected' : ''}`} onClick={toggleBookmark} disabled={!pdf} title="Bookmark page"><Bookmark size={16}/></button><button className="tool-btn" onClick={() => setScale(s => Math.max(.55, s-.1))} disabled={!pdf}><ZoomOut size={16}/></button><span className="zoom">{pdf ? zoomLabel : 'Fit'}</span><button className="tool-btn" onClick={() => setScale(s => Math.min(2.5, s+.1))} disabled={!pdf}><ZoomIn size={16}/></button><button className="tool-btn" onClick={downloadCurrent} disabled={!pdf} title="Download"><Download size={16}/></button><button className="tool-btn" onClick={fullscreen} title="Fullscreen"><Fullscreen size={16}/></button></div>
+      <main className="reader-shell">
+        <div className="reader-header">
+          <div className="reader-header-left"><button className="icon-button" onClick={() => setSidebarOpen((open) => !open)} title="Toggle sidebar"><PanelLeft size={17} /></button><div className="crumbs"><span>Library</span><ChevronRight size={13} /><strong>{welcome ? 'Start reading' : fileName}</strong></div></div>
+          <div className="reader-header-center">{pdf && <><button className="icon-button" disabled={page <= 1} onClick={() => navigate(page - 1)}><ChevronLeft size={16} /></button><span className="page-indicator"><b>{page}</b><i>/</i>{pages}</span><button className="icon-button" disabled={page >= pages} onClick={() => navigate(page + 1)}><ChevronRight size={16} /></button></>}</div>
+          <div className="reader-header-right"><button className={`icon-button ${isBookmarked ? 'active-button' : ''}`} disabled={!pdf} onClick={toggleBookmark} title="Bookmark page"><Bookmark size={16} /></button><button className="icon-button" disabled={!pdf} onClick={() => { setFitMode('actual'); setZoom((value) => clamp(value - 0.1, 0.35, 4)) }}><ZoomOut size={16} /></button><button className="zoom-button" disabled={!pdf} onClick={() => setFitMode((mode) => mode === 'fit' ? 'width' : mode === 'width' ? 'actual' : 'fit')}><span>{zoomLabel}</span><ChevronDown size={13} /></button><button className="icon-button" disabled={!pdf} onClick={() => { setFitMode('actual'); setZoom((value) => clamp(value + 0.1, 0.35, 4)) }}><ZoomIn size={16} /></button><button className="icon-button" disabled={!pdf} onClick={downloadCurrent} title="Save a copy"><ArrowDownToLine size={16} /></button><button className="icon-button" onClick={toggleFullscreen} title="Fullscreen"><Maximize2 size={16} /></button><button className="icon-button" onClick={() => setSettingsOpen((open) => !open)} title="Reader settings"><Settings2 size={16} /></button></div>
         </div>
-
-        {welcome ? <section className="welcome" onDoubleClick={pickFile}>
-          <div className="welcome-glow"/><div className="orb"><Sparkles size={27}/></div>
-          <div className="welcome-copy"><div className="eyebrow">A calmer PDF workspace</div><h1>Read without<br/><em>the clutter.</em></h1><p>Fast, private, beautifully minimal. Your files stay on your device.</p></div>
-          <button className="open-card" onClick={pickFile}><div className="open-icon"><FolderOpen size={20}/></div><div><strong>Open a PDF</strong><span>Choose a document or drag it anywhere</span></div><kbd>⌘ O</kbd></button>
-          <div className="feature-row"><span>⌁ Local-first</span><span>·</span><span>PDF.js powered</span><span>·</span><span>Open source</span></div>
-          <div className="shortcut-row"><span><kbd>⌘ K</kbd> Commands</span><span><kbd>← →</kbd> Pages</span><span><kbd>⌘ F</kbd> Search</span></div>
-        </section> : <div className="canvas-wrap"><div className="paper"><canvas ref={canvasRef}/></div></div>}
+        <div className={`document-stage ${welcome ? 'welcome-stage' : ''}`} ref={readerRef}>
+          {welcome ? <section className="welcome-card" onDoubleClick={pickFile}><div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" /><div className="hero-symbol"><Sparkles size={24} /></div><div className="hero-kicker">LOCAL · FOCUSED · BEAUTIFUL</div><h1>PDF reading,<br /><em>reimagined.</em></h1><p>Velum strips away the noise and leaves the document.<br />Fast rendering, thoughtful controls, zero cloud upload.</p><button className="hero-open" onClick={pickFile}><FolderOpen size={18} /><span>Open a PDF</span><kbd>⌘O</kbd></button><div className="hero-microcopy"><span><Check size={12} /> Local-first</span><span><Check size={12} /> Open source</span><span><Check size={12} /> No account</span></div></section> : <div className="paper-wrap"><div className="paper-shadow" /><div className="paper"><canvas ref={canvasRef} /></div></div>}
+          {loading && <div className="loading-pill"><span className="loader" />Opening document…</div>}
+          {dragging && <div className="drop-screen"><div className="drop-card"><div className="drop-logo"><FileText size={25} /></div><strong>Drop your PDF</strong><span>Velum never sends your document anywhere.</span></div></div>}
+        </div>
+        <footer className={`statusbar ${showStatus ? '' : 'hidden'}`}><div><span className="status-dot" />{pdf ? 'Ready' : 'Ready when you are'}</div><div><span>{pdf ? `${formatSize(fileSize)} · local` : 'Local-first'}</span><span>⌘K commands</span><button onClick={() => setShowStatus(false)}><X size={12} /></button></div></footer>
       </main>
     </div>
-
-    {error && <div className="toast error"><span>{error}</span><button onClick={() => setError('')}><X size={14}/></button></div>}
-
-    {searchOpen && <div className="modal-backdrop" onMouseDown={() => setSearchOpen(false)}><div className="search-modal" onMouseDown={e => e.stopPropagation()}><div className="modal-head"><Search size={18}/><input ref={searchInput} value={query} onChange={e => void runSearch(e.target.value)} placeholder="Search text in this PDF…"/><kbd>ESC</kbd></div><div className="results">{searching && <div className="result-empty">Searching pages…</div>}{!searching && query.length > 1 && !searchResults.length && <div className="result-empty">No matches found.</div>}{!query && <div className="result-empty">Type at least two characters to search the document.</div>}{searchResults.map(p => <button key={p} onClick={() => { setPage(p); setSearchOpen(false) }}><FileText size={15}/><span>Page {p}</span><ChevronRight size={15}/></button>)}</div></div></div>}
-
-    {commandOpen && <div className="modal-backdrop" onMouseDown={() => setCommandOpen(false)}><div className="command-modal" onMouseDown={e => e.stopPropagation()}><div className="command-title"><Command size={17}/><span>Command palette</span><kbd>ESC</kbd></div><div className="command-list">
-      <button onClick={() => { setCommandOpen(false); pickFile() }}><FolderOpen size={16}/><span>Open PDF</span><kbd>⌘ O</kbd></button>
-      <button onClick={() => { setCommandOpen(false); setSearchOpen(true); setTimeout(() => searchInput.current?.focus(), 20) }}><Search size={16}/><span>Search document</span><kbd>⌘ F</kbd></button>
-      <button onClick={() => { setCommandOpen(false); setDark(v => !v) }}>{dark ? <Sun size={16}/> : <Moon size={16}/>}<span>Toggle appearance</span><kbd>⌘ ⇧ T</kbd></button>
-      <button disabled={!pdf} onClick={() => { setCommandOpen(false); setScale(1) }}><Maximize2 size={16}/><span>Reset zoom</span><kbd>0</kbd></button>
-      <button onClick={() => { setCommandOpen(false); fullscreen() }}><Fullscreen size={16}/><span>Toggle fullscreen</span><kbd>F11</kbd></button>
-    </div></div></div>}
+    {error && <div className="toast error"><span>{error}</span><button onClick={() => setError('')}><X size={14} /></button></div>}
+    {toast && <div className="toast"><Check size={14} /><span>{toast}</span></div>}
+    {searchOpen && <div className="modal-layer" onMouseDown={() => setSearchOpen(false)}><div className="search-modal" onMouseDown={(event) => event.stopPropagation()}><div className="modal-searchbar"><Search size={18} /><input ref={searchInputRef} value={query} onChange={(event) => void searchDocument(event.target.value)} placeholder={pdf ? 'Search every page…' : 'Open a PDF to search'} autoFocus /><kbd>ESC</kbd></div><div className="search-results">{searching && <div className="search-empty"><span className="loader" />Searching the document…</div>}{!searching && !query && <div className="search-empty"><Search size={20} /><strong>Find anything in your PDF</strong><span>Type two or more characters to scan the document.</span></div>}{!searching && query && !searchHits.length && <div className="search-empty"><Search size={20} /><strong>No matches</strong><span>Try another phrase or a shorter search.</span></div>}{!searching && searchHits.map((hit) => <button className="search-hit" key={hit.page} onClick={() => { navigate(hit.page); setSearchOpen(false) }}><div className="hit-page">{hit.page}</div><div><strong>Page {hit.page}</strong><span>{hit.preview || 'Match found on this page.'}</span></div><ArrowRight size={15} /></button>)}</div></div></div>}
+    {commandOpen && <div className="modal-layer" onMouseDown={() => setCommandOpen(false)}><div className="command-modal" onMouseDown={(event) => event.stopPropagation()}><div className="command-head"><Command size={17} /><span>Quick actions</span><kbd>ESC</kbd></div><button onClick={() => { setCommandOpen(false); pickFile() }}><FolderOpen size={16} /><span>Open PDF</span><kbd>⌘O</kbd></button><button onClick={() => { setCommandOpen(false); setSearchOpen(true); window.setTimeout(() => searchInputRef.current?.focus(), 30) }}><Search size={16} /><span>Search document</span><kbd>⌘F</kbd></button><button onClick={() => { setCommandOpen(false); toggleBookmark() }} disabled={!pdf}><Bookmark size={16} /><span>{isBookmarked ? 'Remove bookmark' : 'Bookmark page'}</span><kbd>⌘B</kbd></button><button onClick={() => { setCommandOpen(false); setFitMode('fit') }} disabled={!pdf}><Maximize2 size={16} /><span>Fit page</span><kbd>0</kbd></button><button onClick={() => { setCommandOpen(false); setFitMode('width') }} disabled={!pdf}><PanelLeft size={16} /><span>Fit width</span><kbd>2</kbd></button><button onClick={() => { setCommandOpen(false); void toggleFullscreen() }}><Maximize2 size={16} /><span>Fullscreen</span><kbd>F11</kbd></button><button onClick={() => { setCommandOpen(false); setTheme((current) => current === 'dark' ? 'light' : 'dark') }}><Sun size={16} /><span>Toggle appearance</span></button></div></div>}
+    {settingsOpen && <div className="settings-popover" onMouseLeave={() => setSettingsOpen(false)}><div className="popover-title"><Settings2 size={14} /> Reader</div><div className="popover-row"><span>Appearance</span><button onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? 'Dark' : 'Light'}</button></div><div className="popover-row"><span>Page fit</span><div className="segmented"><button className={fitMode === 'fit' ? 'selected' : ''} onClick={() => setFitMode('fit')}>Fit</button><button className={fitMode === 'width' ? 'selected' : ''} onClick={() => setFitMode('width')}>Width</button><button className={fitMode === 'actual' ? 'selected' : ''} onClick={() => setFitMode('actual')}>100%</button></div></div><div className="popover-row"><span>Sidebar</span><button onClick={() => setSidebarOpen((open) => !open)}>{sidebarOpen ? 'Visible' : 'Hidden'}</button></div><div className="popover-foot"><Keyboard size={13} /><span>⌘K for all commands</span></div></div>}
+    <div className="mobile-bottom-bar"><button onClick={() => setSidebarOpen((open) => !open)}><Menu size={17} /></button><button onClick={() => navigate(page - 1)} disabled={!pdf || page <= 1}><ArrowLeft size={17} /></button><span>{pdf ? `${page} / ${pages}` : 'Velum'}</span><button onClick={() => navigate(page + 1)} disabled={!pdf || page >= pages}><ArrowRight size={17} /></button><button onClick={() => setCommandOpen(true)}><Command size={17} /></button></div>
   </div>
 }
