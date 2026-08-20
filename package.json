@@ -1,6 +1,6 @@
 {
   "name": "velum",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,17 +13,17 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "lucide-react": "^0.468.0",
-    "pdfjs-dist": "^5.4.149",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "lucide-react": "0.468.0",
+    "pdfjs-dist": "5.4.149",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.9.0",
-    "@types/react": "^19.1.10",
-    "@types/react-dom": "^19.1.7",
-    "@vitejs/plugin-react": "^4.7.0",
+    "@tauri-apps/cli": "2.9.0",
+    "@types/react": "19.1.10",
+    "@types/react-dom": "19.1.7",
+    "@vitejs/plugin-react": "4.7.0",
     "typescript": "~5.9.2",
-    "vite": "^7.1.2"
+    "vite": "7.1.2"
   }
 }

@@ -70,7 +70,7 @@ jobs:
             librsvg2-dev
 
       - name: Install JavaScript dependencies
-        run: npm install --no-audit --no-fund
+        run: npm install --no-audit --no-fund --no-package-lock
 
       - name: Typecheck
         run: npm run typecheck

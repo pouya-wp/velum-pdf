@@ -41,7 +41,7 @@ function Thumbnail({ pdf, page, active, bookmarked, onSelect }: { pdf: PDFDocume
       const ctx = canvas.getContext('2d')
       if (!ctx) return
       ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-      task = p.render({ canvasContext: ctx, viewport })
+      task = p.render({ canvasContext: ctx, viewport } as any)
     }).catch(() => undefined)
     return () => { cancelled = true; task?.cancel?.() }
   }, [pdf, page])
@@ -129,7 +129,7 @@ export default function App() {
     canvas.style.width = `${Math.round(viewport.width)}px`; canvas.style.height = `${Math.round(viewport.height)}px`
     const ctx = canvas.getContext('2d'); if (!ctx) return
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-    const renderTask = current.render({ canvasContext: ctx, viewport })
+    const renderTask = current.render({ canvasContext: ctx, viewport } as any)
     renderTaskRef.current = renderTask
     try { await renderTask.promise } catch (cause) { if ((cause as { name?: string }).name !== 'RenderingCancelledException') console.error(cause) }
   }, [fitMode, page, pdf, renderVersion, zoom])
@@ -154,7 +154,7 @@ export default function App() {
 
   const downloadCurrent = useCallback(() => {
     if (!fileBytes) return
-    const blob = new Blob([fileBytes], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a')
+    const blob = new Blob([fileBytes as unknown as BlobPart], { type: 'application/pdf' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a')
     anchor.href = url; anchor.download = fileName; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url); notify('Saved a copy of the PDF')
   }, [fileBytes, fileName, notify])
   const toggleBookmark = useCallback(() => { if (!pdf) return; setBookmarks((current) => current.includes(page) ? current.filter((value) => value !== page) : [...current, page].sort((a, b) => a - b)); notify(isBookmarked ? `Removed page ${page} bookmark` : `Bookmarked page ${page}`) }, [isBookmarked, notify, page, pdf])
