@@ -1,42 +1,41 @@
-# Velum PDF
+# Velum
 
-A modern, local-first PDF reader for Windows, macOS and Linux.
+A calm, local-first PDF reader for Windows, macOS and Linux.
 
-## What is already here
+## Highlights
 
-- Drag & drop PDF opening
-- PDF.js rendering
-- Page navigation
-- Zoom controls
-- Thumbnail-ready architecture
-- Recent documents stored locally
-- Dark / light theme toggle
-- Responsive, minimal UI
-- Tauri 2 desktop shell
-- No account, no cloud upload
-- GitHub Actions build pipeline for Windows/macOS/Linux
-
-## Run locally
-
-```bash
-npm install
-npm run tauri:dev
-```
+- Modern, minimal desktop UI
+- Local PDF rendering with PDF.js
+- Drag & drop
+- Page thumbnails
+- Page navigation and zoom
+- Text search across the document
+- Bookmarks stored for the current session
+- Dark / light appearance
+- Command palette
+- Fullscreen mode
+- Recent document history (metadata only)
+- No account and no upload
+- Tauri 2 native desktop shell
 
 ## Build
 
 ```bash
+npm install
 npm run tauri:build
 ```
 
-### Important
+## GitHub Actions
 
-You do not need Visual Studio as an IDE. Tauri's Windows build still requires Microsoft's C++ build toolchain because Rust ultimately links a native Windows application. If you don't want to install any native toolchain locally, push this repo to GitHub: the included workflow builds Windows, macOS and Linux installers for you.
+- Pushes to `main` build Windows, macOS Intel, macOS Apple Silicon and Linux artifacts.
+- Tags like `v1.0.0` create a GitHub Release automatically.
 
-## GitHub build
+```bash
+git add .
+git commit -m "Release Velum 1.0"
+git push
+git tag v1.0.0
+git push origin v1.0.0
+```
 
-Push the repository to GitHub. The workflow in `.github/workflows/build.yml` builds:
-
-- Windows: `.msi` / `.exe`
-- macOS: `.dmg`
-- Linux: `.AppImage` / `.deb`
+For production distribution, add Windows Authenticode signing and Apple Developer signing/notarization credentials to the release workflow.
